@@ -135,6 +135,27 @@ db.exec(`
     FOREIGN KEY (student_id) REFERENCES students(id),
     FOREIGN KEY (class_id) REFERENCES classes(id)
   );
+
+  CREATE TABLE IF NOT EXISTS homework_reminders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    homework_id INTEGER NOT NULL,
+    student_id INTEGER NOT NULL,
+    parent_id INTEGER NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (homework_id) REFERENCES homework(id),
+    FOREIGN KEY (student_id) REFERENCES students(id),
+    FOREIGN KEY (parent_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS homework_reminder_reads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reminder_id INTEGER NOT NULL,
+    parent_id INTEGER NOT NULL,
+    read_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (reminder_id) REFERENCES homework_reminders(id),
+    FOREIGN KEY (parent_id) REFERENCES users(id),
+    UNIQUE(reminder_id, parent_id)
+  );
 `);
 
 export default db;

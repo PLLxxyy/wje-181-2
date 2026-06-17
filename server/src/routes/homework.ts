@@ -100,4 +100,32 @@ router.get('/stats/:classId', authMiddleware, roleGuard('teacher'), (req: AuthRe
   }
 });
 
+// 老师一键催交未提交的学生
+router.post('/:id/remind', authMiddleware, roleGuard('teacher'), (req: AuthRequest, res: Response) => {
+  try {
+    const hw = db.prepare('SELECT * FROM homework WHERE id = ? AND teacher_id = ?').get(req.params.id, req.user!.id) as any;
+    if (!hw) return res.status(404).json({ error: '作业不存在或无权操作' });
+    const pendingSubs = db.prepare(
+      "SELECT sub.student_id, s.parent_id FROM submissions sub JOIN students s ON s.id = sub.student_id WHERE sub.homework_id = ? AND sub.status = 'pending' AND s.parent_id IS NOT NULL"
+    ).all(req.params.id) as any[];
+    if (pendingSubs.length === 0) return res.json({ success: true, count: 0 });
+    const stmt = db.prepare('INSERT INTO homework_reminders (homework_id, student_id, parent_id) VALUES (?, ?, ?)');
+    const insertMany = db.transaction((subs: any[]) => {
+      let count = 0;
+      for (const s of subs) {
+        const existing = db.prepare('SELECT id FROM homework_reminders WHERE homework_id = ? AND student_id = ?').get(req.params.id, s.student_id);
+        if (!existing) {
+          stmt.run(req.params.id, s.student_id, s.parent_id);
+          count++;
+        }
+      }
+      return count;
+    });
+    const count = insertMany(pendingSubs);
+    res.json({ success: true, count });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

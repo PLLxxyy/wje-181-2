@@ -76,6 +76,13 @@ export default function ParentDashboard({ user, navigate, showToast }: Props) {
     } catch (err: any) {}
   };
 
+  const handleMarkReminderRead = async (reminderId: number) => {
+    try {
+      await api.post(`/parent/reminders/${reminderId}/read`, {});
+      loadNotifications();
+    } catch (err: any) {}
+  };
+
   const unreadCount = notifications.filter((n: any) => !n.read_id).length;
 
   return (
@@ -202,9 +209,19 @@ export default function ParentDashboard({ user, navigate, showToast }: Props) {
           {tab === 'notices' && (
             <div>
               {notifications.length > 0 ? notifications.map((n: any) => (
-                <div key={n.id} className="card" style={{ cursor: 'pointer', opacity: n.read_id ? 0.7 : 1 }} onClick={() => { if (!n.read_id) handleMarkRead(n.id); navigate('notice-detail', { noticeId: n.id }); }}>
+                <div key={`${n.type}-${n.id}`} className="card" style={{ cursor: 'pointer', opacity: n.read_id ? 0.7 : 1 }} onClick={() => {
+                  if (!n.read_id) {
+                    if (n.type === 'homework_reminder') handleMarkReminderRead(n.id);
+                    else handleMarkRead(n.id);
+                  }
+                  if (n.type === 'homework_reminder' && n.homework_id) navigate('homework-detail', { homeworkId: n.homework_id });
+                  else navigate('notice-detail', { noticeId: n.id });
+                }}>
                   <div className="flex justify-between items-center">
-                    <div className="card-title" style={{ marginBottom: 0 }}>{n.title}</div>
+                    <div className="card-title" style={{ marginBottom: 0 }}>
+                      {n.type === 'homework_reminder' && <span className="tag tag-orange" style={{ marginRight: 8, verticalAlign: 'middle' }}>催交</span>}
+                      {n.title}
+                    </div>
                     <span className={`tag ${n.read_id ? 'tag-gray' : 'tag-blue'}`}>{n.read_id ? '已读' : '未读'}</span>
                   </div>
                   <div className="text-sm text-gray mt-16">{n.class_name} | {n.teacher_name} | {n.created_at?.split('T')[0] || n.created_at?.split(' ')[0]}</div>

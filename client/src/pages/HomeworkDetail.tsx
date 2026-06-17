@@ -13,6 +13,7 @@ export default function HomeworkDetail({ user, homeworkId, navigate, showToast }
   const [hw, setHw] = useState<any>(null);
   const [reviewTarget, setReviewTarget] = useState<any>(null);
   const [reviewForm, setReviewForm] = useState({ comment: '', score: '' });
+  const [reminding, setReminding] = useState(false);
 
   useEffect(() => { loadDetail(); }, [homeworkId]);
 
@@ -32,6 +33,15 @@ export default function HomeworkDetail({ user, homeworkId, navigate, showToast }
       setReviewForm({ comment: '', score: '' });
       loadDetail();
     } catch (err: any) { showToast(err.message); }
+  };
+
+  const handleRemind = async () => {
+    setReminding(true);
+    try {
+      const data = await api.post(`/homework/${homeworkId}/remind`, {});
+      showToast(data.count > 0 ? `已催交${data.count}位学生` : '没有需要催交的学生');
+      loadDetail();
+    } catch (err: any) { showToast(err.message); } finally { setReminding(false); }
   };
 
   if (!hw) return <div className="empty">加载中...</div>;
@@ -56,7 +66,12 @@ export default function HomeworkDetail({ user, homeworkId, navigate, showToast }
 
       {user.role === 'teacher' && hw.submissions && (
         <div className="card">
-          <div className="card-title">提交情况（{hw.submissions.filter((s: any) => s.status !== 'pending').length}/{hw.submissions.length}已提交）</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div className="card-title">提交情况（{hw.submissions.filter((s: any) => s.status !== 'pending').length}/{hw.submissions.length}已提交）</div>
+            {hw.submissions.some((s: any) => s.status === 'pending') && new Date(hw.due_date) < new Date() && (
+              <button className="btn btn-sm btn-primary" onClick={handleRemind} disabled={reminding}>{reminding ? '催交中...' : '一键催交'}</button>
+            )}
+          </div>
           <div className="table-wrap">
             <table>
               <thead><tr><th>学号</th><th>姓名</th><th>状态</th><th>提交内容</th><th>分数</th><th>评语</th><th>操作</th></tr></thead>
