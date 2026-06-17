@@ -105,6 +105,10 @@ router.post('/:id/remind', authMiddleware, roleGuard('teacher'), (req: AuthReque
   try {
     const hw = db.prepare('SELECT * FROM homework WHERE id = ? AND teacher_id = ?').get(req.params.id, req.user!.id) as any;
     if (!hw) return res.status(404).json({ error: '作业不存在或无权操作' });
+    const todayStr = new Date().toISOString().slice(0, 10);
+    if (hw.due_date >= todayStr) {
+      return res.status(400).json({ error: '作业尚未到期，暂不能催交' });
+    }
     const pendingSubs = db.prepare(
       "SELECT sub.student_id, s.parent_id FROM submissions sub JOIN students s ON s.id = sub.student_id WHERE sub.homework_id = ? AND sub.status = 'pending' AND s.parent_id IS NOT NULL"
     ).all(req.params.id) as any[];

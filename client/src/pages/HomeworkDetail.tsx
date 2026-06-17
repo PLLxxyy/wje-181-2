@@ -68,9 +68,15 @@ export default function HomeworkDetail({ user, homeworkId, navigate, showToast }
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div className="card-title">提交情况（{hw.submissions.filter((s: any) => s.status !== 'pending').length}/{hw.submissions.length}已提交）</div>
-            {hw.submissions.some((s: any) => s.status === 'pending') && new Date(hw.due_date) < new Date() && (
-              <button className="btn btn-sm btn-primary" onClick={handleRemind} disabled={reminding}>{reminding ? '催交中...' : '一键催交'}</button>
-            )}
+            {(() => {
+              const todayStr = new Date();
+              const pad = (n: number) => String(n).padStart(2, '0');
+              const tStr = `${todayStr.getFullYear()}-${pad(todayStr.getMonth() + 1)}-${pad(todayStr.getDate())}`;
+              const showRemind = hw.submissions.some((s: any) => s.status === 'pending') && hw.due_date < tStr;
+              return showRemind ? (
+                <button className="btn btn-sm btn-primary" onClick={handleRemind} disabled={reminding}>{reminding ? '催交中...' : '一键催交'}</button>
+              ) : null;
+            })()}
           </div>
           <div className="table-wrap">
             <table>
