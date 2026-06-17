@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import bcrypt from 'bcryptjs';
@@ -9,10 +9,13 @@ import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = 'home-school-secret-key-2024';
 
+const FIXED_BASE_DATE = '2026-06-17';
+
 function createDb() {
   const tmpDir = path.join(__dirname, '..', 'tmp-test');
   if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-  const dbFile = path.join(tmpDir, `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`);
+  const randomName = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`;
+  const dbFile = path.join(tmpDir, randomName);
   const db = new Database(dbFile);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
@@ -133,7 +136,9 @@ function buildApp(db: any) {
     try {
       const hw = db.prepare('SELECT * FROM homework WHERE id = ? AND teacher_id = ?').get(req.params.id, req.user.id);
       if (!hw) return res.status(404).json({ error: '作业不存在或无权操作' });
-      const todayStr = new Date().toISOString().slice(0, 10);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const now = new Date();
+      const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
       if (hw.due_date >= todayStr) {
         return res.status(400).json({ error: '作业尚未到期，暂不能催交' });
       }
@@ -160,11 +165,18 @@ function buildApp(db: any) {
   return app;
 }
 
-function signToken(user: any) {
-  return jwt.sign(user, JWT_SECRET, { expiresIn: '1h' });
+function signToken(user: any, expiresIn: string = '1h') {
+  return jwt.sign(user, JWT_SECRET, { expiresIn });
 }
 
-describe('Homework Reminder API - Due Date Validation', () => {
+function daysFromFixedBase(days: number): string {
+  const base = new Date(FIXED_BASE_DATE + 'T00:00:00');
+  base.setDate(base.getDate() + days);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${base.getFullYear()}-${pad(base.getMonth() + 1)}-${pad(base.getDate())}`;
+}
+
+describe('Homework Reminder API - Due Date Validation (本地时区口径)', () => {
   let db: any;
   let app: any;
   let teacherToken: string;
@@ -172,11 +184,18 @@ describe('Homework Reminder API - Due Date Validation', () => {
   let parentId: number;
   let classId: number;
   let studentId: number;
+  let OriginalDate: DateConstructor;
 
-  function daysFromNow(days: number): string {
-    const d = new Date();
-    d.setDate(d.getDate() + days);
-    return d.toISOString().slice(0, 10);
+  function setMockDate(localDateTimeStr: string) {
+    const fixedNow = new Date(localDateTimeStr).getTime();
+    class MockDate extends OriginalDate {
+      constructor(...args: any[]) {
+        if (args.length === 0) super(fixedNow as any);
+        else super(...(args as [any]));
+      }
+      static now() { return fixedNow; }
+    }
+    global.Date = MockDate as DateConstructor;
   }
 
   function createHomework(dueDate: string) {
@@ -189,6 +208,9 @@ describe('Homework Reminder API - Due Date Validation', () => {
   }
 
   beforeEach(() => {
+    OriginalDate = global.Date;
+    setMockDate(FIXED_BASE_DATE + 'T10:00:00');
+
     db = createDb();
     app = buildApp(db);
 
@@ -208,6 +230,7 @@ describe('Homework Reminder API - Due Date Validation', () => {
   });
 
   afterEach(() => {
+    global.Date = OriginalDate;
     const f = (db as any)._file;
     if (db && db.close) db.close();
     if (f && fs.existsSync(f)) {
@@ -217,107 +240,174 @@ describe('Homework Reminder API - Due Date Validation', () => {
     }
   });
 
-  it('作业未到期时调用催交接口返回 400 且不生成提醒', async () => {
-    const hwId = createHomework(daysFromNow(5));
-    const res = await request(app)
-      .post(`/api/homework/${hwId}/remind`)
-      .set('Authorization', `Bearer ${teacherToken}`);
+  describe('基础截止日期校验', () => {
+    it('作业未到期时（5天后）调用催交接口返回 400 且不生成提醒', async () => {
+      const hwId = createHomework(daysFromFixedBase(5));
+      const res = await request(app)
+        .post(`/api/homework/${hwId}/remind`)
+        .set('Authorization', `Bearer ${teacherToken}`);
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain('尚未到期');
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('尚未到期');
 
-    const reminders = db.prepare('SELECT * FROM homework_reminders WHERE homework_id = ?').all(hwId);
-    expect(reminders.length).toBe(0);
+      const reminders = db.prepare('SELECT * FROM homework_reminders WHERE homework_id = ?').all(hwId);
+      expect(reminders.length).toBe(0);
+    });
+
+    it('作业截止日期等于今天仍未过期，返回 400', async () => {
+      const hwId = createHomework(daysFromFixedBase(0));
+      const res = await request(app)
+        .post(`/api/homework/${hwId}/remind`)
+        .set('Authorization', `Bearer ${teacherToken}`);
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('尚未到期');
+
+      const reminders = db.prepare('SELECT * FROM homework_reminders WHERE homework_id = ?').all(hwId);
+      expect(reminders.length).toBe(0);
+    });
+
+    it('作业已到期（截止日期在昨天），调用催交成功并生成提醒', async () => {
+      const hwId = createHomework(daysFromFixedBase(-1));
+      const res = await request(app)
+        .post(`/api/homework/${hwId}/remind`)
+        .set('Authorization', `Bearer ${teacherToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.count).toBe(1);
+
+      const reminders = db.prepare('SELECT * FROM homework_reminders WHERE homework_id = ?').all(hwId);
+      expect(reminders.length).toBe(1);
+      expect(reminders[0].student_id).toBe(studentId);
+      expect(reminders[0].parent_id).toBe(parentId);
+    });
+
+    it('重复调用催交接口不会生成重复提醒，第二次 count 为 0', async () => {
+      const hwId = createHomework(daysFromFixedBase(-2));
+
+      const res1 = await request(app)
+        .post(`/api/homework/${hwId}/remind`)
+        .set('Authorization', `Bearer ${teacherToken}`);
+      expect(res1.status).toBe(200);
+      expect(res1.body.count).toBe(1);
+
+      const res2 = await request(app)
+        .post(`/api/homework/${hwId}/remind`)
+        .set('Authorization', `Bearer ${teacherToken}`);
+      expect(res2.status).toBe(200);
+      expect(res2.body.count).toBe(0);
+
+      const reminders = db.prepare('SELECT * FROM homework_reminders WHERE homework_id = ?').all(hwId);
+      expect(reminders.length).toBe(1);
+    });
+
+    it('已到期但所有学生都已提交时，催交成功但 count 为 0', async () => {
+      const hw = db.prepare('INSERT INTO homework (class_id, teacher_id, title, content, due_date) VALUES (?, ?, ?, ?, ?)').run(
+        classId, teacherId, '全交作业', '测试', daysFromFixedBase(-3)
+      );
+      const hwId = hw.lastInsertRowid;
+      db.prepare('INSERT INTO submissions (homework_id, student_id, status) VALUES (?, ?, ?)').run(hwId, studentId, 'submitted');
+
+      const res = await request(app)
+        .post(`/api/homework/${hwId}/remind`)
+        .set('Authorization', `Bearer ${teacherToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.count).toBe(0);
+
+      const reminders = db.prepare('SELECT * FROM homework_reminders WHERE homework_id = ?').all(hwId);
+      expect(reminders.length).toBe(0);
+    });
   });
 
-  it('作业截止日期等于今天仍未过期，返回 400', async () => {
-    const hwId = createHomework(daysFromNow(0));
-    const res = await request(app)
-      .post(`/api/homework/${hwId}/remind`)
-      .set('Authorization', `Bearer ${teacherToken}`);
+  describe('凌晨跨日场景（本地时区口径一致性）', () => {
+    function freshTeacherToken(): string {
+      return signToken({ id: teacherId, username: 't1', role: 'teacher', name: '张老师' }, '24h');
+    }
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain('尚未到期');
+    it('凌晨 00:30，本地日期已是 17 号，截止日期 17 号（今天）-> 不能催交（400）', async () => {
+      setMockDate('2026-06-17T00:30:00');
+      const hwId = createHomework('2026-06-17');
 
-    const reminders = db.prepare('SELECT * FROM homework_reminders WHERE homework_id = ?').all(hwId);
-    expect(reminders.length).toBe(0);
+      const res = await request(app)
+        .post(`/api/homework/${hwId}/remind`)
+        .set('Authorization', `Bearer ${freshTeacherToken()}`);
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('尚未到期');
+
+      const reminders = db.prepare('SELECT * FROM homework_reminders WHERE homework_id = ?').all(hwId);
+      expect(reminders.length).toBe(0);
+    });
+
+    it('凌晨 00:30，本地日期是 17 号，截止日期 16 号（昨天）-> 可以催交（200）', async () => {
+      setMockDate('2026-06-17T00:30:00');
+      const hwId = createHomework('2026-06-16');
+
+      const res = await request(app)
+        .post(`/api/homework/${hwId}/remind`)
+        .set('Authorization', `Bearer ${freshTeacherToken()}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.count).toBe(1);
+
+      const reminders = db.prepare('SELECT * FROM homework_reminders WHERE homework_id = ?').all(hwId);
+      expect(reminders.length).toBe(1);
+    });
+
+    it('深夜 23:59，本地日期还是 17 号，截止日期 17 号 -> 不能催交（400）', async () => {
+      setMockDate('2026-06-17T23:59:00');
+      const hwId = createHomework('2026-06-17');
+
+      const res = await request(app)
+        .post(`/api/homework/${hwId}/remind`)
+        .set('Authorization', `Bearer ${freshTeacherToken()}`);
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('尚未到期');
+
+      const reminders = db.prepare('SELECT * FROM homework_reminders WHERE homework_id = ?').all(hwId);
+      expect(reminders.length).toBe(0);
+    });
+
+    it('深夜 23:59，本地日期 17 号，截止日期 16 号 -> 可以催交（200）', async () => {
+      setMockDate('2026-06-17T23:59:00');
+      const hwId = createHomework('2026-06-16');
+
+      const res = await request(app)
+        .post(`/api/homework/${hwId}/remind`)
+        .set('Authorization', `Bearer ${freshTeacherToken()}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.count).toBe(1);
+    });
   });
 
-  it('作业已到期（截止日期在昨天），调用催交成功并生成提醒', async () => {
-    const hwId = createHomework(daysFromNow(-1));
-    const res = await request(app)
-      .post(`/api/homework/${hwId}/remind`)
-      .set('Authorization', `Bearer ${teacherToken}`);
+  describe('权限校验', () => {
+    it('家长角色调用催交接口返回 403', async () => {
+      const hwId = createHomework(daysFromFixedBase(-1));
+      const parentToken = signToken({ id: parentId, username: 'p1', role: 'parent', name: '赵家长' });
 
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-    expect(res.body.count).toBe(1);
+      const res = await request(app)
+        .post(`/api/homework/${hwId}/remind`)
+        .set('Authorization', `Bearer ${parentToken}`);
 
-    const reminders = db.prepare('SELECT * FROM homework_reminders WHERE homework_id = ?').all(hwId);
-    expect(reminders.length).toBe(1);
-    expect(reminders[0].student_id).toBe(studentId);
-    expect(reminders[0].parent_id).toBe(parentId);
-  });
+      expect(res.status).toBe(403);
+    });
 
-  it('重复调用催交接口不会生成重复提醒，第二次 count 为 0', async () => {
-    const hwId = createHomework(daysFromNow(-2));
+    it('非所属老师调用催交接口返回 404', async () => {
+      const hash = bcrypt.hashSync('123456', 10);
+      const otherTeacher = db.prepare('INSERT INTO users (username, password, name, role) VALUES (?, ?, ?, ?)').run('t2', hash, '李老师', 'teacher');
+      const otherToken = signToken({ id: otherTeacher.lastInsertRowid, username: 't2', role: 'teacher', name: '李老师' });
+      const hwId = createHomework(daysFromFixedBase(-1));
 
-    const res1 = await request(app)
-      .post(`/api/homework/${hwId}/remind`)
-      .set('Authorization', `Bearer ${teacherToken}`);
-    expect(res1.status).toBe(200);
-    expect(res1.body.count).toBe(1);
+      const res = await request(app)
+        .post(`/api/homework/${hwId}/remind`)
+        .set('Authorization', `Bearer ${otherToken}`);
 
-    const res2 = await request(app)
-      .post(`/api/homework/${hwId}/remind`)
-      .set('Authorization', `Bearer ${teacherToken}`);
-    expect(res2.status).toBe(200);
-    expect(res2.body.count).toBe(0);
-
-    const reminders = db.prepare('SELECT * FROM homework_reminders WHERE homework_id = ?').all(hwId);
-    expect(reminders.length).toBe(1);
-  });
-
-  it('已到期但所有学生都已提交时，催交成功但 count 为 0', async () => {
-    const hw = db.prepare('INSERT INTO homework (class_id, teacher_id, title, content, due_date) VALUES (?, ?, ?, ?, ?)').run(
-      classId, teacherId, '全交作业', '测试', daysFromNow(-3)
-    );
-    const hwId = hw.lastInsertRowid;
-    db.prepare('INSERT INTO submissions (homework_id, student_id, status) VALUES (?, ?, ?)').run(hwId, studentId, 'submitted');
-
-    const res = await request(app)
-      .post(`/api/homework/${hwId}/remind`)
-      .set('Authorization', `Bearer ${teacherToken}`);
-
-    expect(res.status).toBe(200);
-    expect(res.body.count).toBe(0);
-
-    const reminders = db.prepare('SELECT * FROM homework_reminders WHERE homework_id = ?').all(hwId);
-    expect(reminders.length).toBe(0);
-  });
-
-  it('家长角色调用催交接口返回 403', async () => {
-    const hwId = createHomework(daysFromNow(-1));
-    const parentToken = signToken({ id: parentId, username: 'p1', role: 'parent', name: '赵家长' });
-
-    const res = await request(app)
-      .post(`/api/homework/${hwId}/remind`)
-      .set('Authorization', `Bearer ${parentToken}`);
-
-    expect(res.status).toBe(403);
-  });
-
-  it('非所属老师调用催交接口返回 404', async () => {
-    const hash = bcrypt.hashSync('123456', 10);
-    const otherTeacher = db.prepare('INSERT INTO users (username, password, name, role) VALUES (?, ?, ?, ?)').run('t2', hash, '李老师', 'teacher');
-    const otherToken = signToken({ id: otherTeacher.lastInsertRowid, username: 't2', role: 'teacher', name: '李老师' });
-    const hwId = createHomework(daysFromNow(-1));
-
-    const res = await request(app)
-      .post(`/api/homework/${hwId}/remind`)
-      .set('Authorization', `Bearer ${otherToken}`);
-
-    expect(res.status).toBe(404);
-    expect(res.body.error).toContain('无权操作');
+      expect(res.status).toBe(404);
+      expect(res.body.error).toContain('无权操作');
+    });
   });
 });

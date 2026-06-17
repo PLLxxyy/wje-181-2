@@ -105,7 +105,9 @@ router.post('/:id/remind', authMiddleware, roleGuard('teacher'), (req: AuthReque
   try {
     const hw = db.prepare('SELECT * FROM homework WHERE id = ? AND teacher_id = ?').get(req.params.id, req.user!.id) as any;
     if (!hw) return res.status(404).json({ error: '作业不存在或无权操作' });
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
     if (hw.due_date >= todayStr) {
       return res.status(400).json({ error: '作业尚未到期，暂不能催交' });
     }
